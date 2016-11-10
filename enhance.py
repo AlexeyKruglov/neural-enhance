@@ -39,6 +39,7 @@ add_arg('files',                nargs='*', default=[])
 add_arg('--zoom',               default=1, type=int,                help='Resolution increase factor for inference.')
 add_arg('--rendering-tile',     default=128, type=int,              help='Size of tiles used for rendering images.')
 add_arg('--rendering-overlap',  default=32, type=int,               help='Number of pixels padding around each tile.')
+add_arg('--rendering-histogram',default=False, action='store_true', help='Match color histogram of output to input.')
 add_arg('--model',              default='small', type=str,          help='Name of the neural network to load/save.')
 add_arg('--train',              default=False, type=str,            help='File pattern to load for training.')
 add_arg('--train-blur',         default=None, type=int,             help='Sigma value for gaussian blur preprocess.')
@@ -560,6 +561,14 @@ class NeuralEnhancer(object):
         self.model.save_generator()
         print(ansi.ENDC)
 
+    def match_histograms(self, A, B, rng=(0.0, 255.0), bins=64):
+        (Ha, Xa), (Hb, Xb) = [np.histogram(i, bins=bins, range=rng, density=True) for i in [A, B]]
+        X = np.linspace(rng[0], rng[1], bins, endpoint=True)
+        Hpa, Hpb = [np.cumsum(i) * (rng[1] - rng[0]) ** 2 / float(bins) for i in [Ha, Hb]]
+        inv_Ha = scipy.interpolate.interp1d(X, Hpa, bounds_error=False)
+        map_Hb = scipy.interpolate.interp1d(Hpb, X, bounds_error=False)
+        return map_Hb(inv_Ha(A))
+
     def process(self, original):
         # Snap the image to a shape that's compatible with the generator (2x, 4x)
         s = 2 ** max(args.generator_upscale, args.generator_downscale)
@@ -577,7 +586,14 @@ class NeuralEnhancer(object):
             *_, repro = self.model.predict(img)
             output[y*z:(y+s)*z,x*z:(x+s)*z,:] = np.transpose(repro[0] + 1.0, (1, 2, 0))[p*z:-p*z,p*z:-p*z,:]
             print('.', end='', flush=True)
-        return scipy.misc.toimage(output * 127.5, cmin=0, cmax=255)
+        output = output.clip(0.0, 2.0) * 127.5
+
+        # Match color histograms if the user specified this option.
+        if args.rendering_histogram:
+            for i in range(3):
+                output[:,:,i] = self.match_histograms(output[:,:,i], original[:,:,i])
+
+        return scipy.misc.toimage(output, cmin=0, cmax=255)
 
 
 if __name__ == "__main__":
